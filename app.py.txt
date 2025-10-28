@@ -1,0 +1,138 @@
+
+import streamlit as st
+import pandas as pd
+from sqlalchemy import create_engine
+import plotly.express as px
+
+# Database connection
+DB_URL = "mysql+pymysql://root:Admin%40123@localhost:3306/phonepe_db"
+
+engine = create_engine(DB_URL)
+
+try:
+    test_df = pd.read_sql("SELECT COUNT(*) as rows FROM aggregated_transaction", engine)
+    st.sidebar.success(f"DB Connected. Rows in aggregated_transaction: {test_df['rows'][0]}")
+except Exception as e:
+    st.sidebar.error(f"DB Error: {e}")
+
+
+# Streamlit page config
+st.set_page_config(layout="wide", page_title="PhonePe Pulse Dashboard")
+st.title("📱 PhonePe Pulse — Transaction & User Insights")
+
+# Check DB Connection
+try:
+    engine.connect()
+except Exception as e:
+    st.error(f"Database Connection Failed: {e}")
+    st.stop()
+
+# Sidebar
+with st.sidebar:
+    st.header("Filters")
+
+    states = pd.read_sql(
+        "SELECT DISTINCT state FROM aggregated_transactions ORDER BY state;", engine
+    )['state'].dropna().tolist()
+
+    states.insert(0, "All India")
+
+    sel_state = st.selectbox("Select State", states)
+    sel_metric = st.selectbox(
+        "Metric", 
+        {"transaction_amount": "Transaction Amount", 
+         "transaction_count": "Transaction Count"}
+    )
+    top_n = st.slider("Top N", 5, 50, 10)
+
+order_column = "total_amount" if sel_metric == "transaction_amount" else "total_count"
+
+# Top State Overview
+st.subheader("Top States Overview")
+
+if sel_state == "All India":
+    query_top_states = f"""
+        SELECT state,
+               SUM(transaction_amount) AS total_amount,
+               SUM(transaction_count) AS total_count
+        FROM aggregated_transactions
+        GROUP BY state
+        ORDER BY {order_column} DESC
+        LIMIT {top_n};
+    """
+    df_top_states = pd.read_sql(query_top_states, engine)
+
+    if df_top_states.empty:
+        st.warning("No data available for selected filter")
+    else:
+        fig = px.bar(df_top_states, x="state", y=order_column,
+                     title=f"Top {top_n} States by {sel_metric.replace('_',' ').title()}")
+        st.plotly_chart(fig, use_container_width=True)
+
+else:
+    # Selected State Trend
+    query_state_trend = f"""
+        SELECT year, quarter,
+               SUM(transaction_amount) AS total_amount,
+               SUM(transaction_count) AS total_count
+        FROM aggregated_transactions
+        WHERE state=%s
+        GROUP BY year, quarter
+        ORDER BY year, quarter;
+    """
+    df_state_trend = pd.read_sql(query_state_trend, engine, params=[sel_state])
+    df_state_trend["period"] = df_state_trend["year"].astype(str) + " Q" + df_state_trend["quarter"].astype(str)
+
+    fig = px.line(df_state_trend, x="period", y=order_column,
+                  markers=True,
+                  title=f"{sel_state} Quarterly Trend ({sel_metric.replace('_',' ').title()})")
+    st.plotly_chart(fig, use_container_width=True)
+
+# Payment Category Share
+st.subheader("Payment Type Share (India)")
+
+query_cat = """
+    SELECT transaction_type AS category,
+           SUM(transaction_amount) AS amount
+    FROM aggregated_transactions
+    GROUP BY transaction_type
+    ORDER BY amount DESC;
+"""
+df_cat = pd.read_sql(query_cat, engine)
+fig2 = px.pie(df_cat, values='amount', names='category',
+              title="Payment Types by Transaction Amount Share")
+st.plotly_chart(fig2, use_container_width=True)
+
+# Top Districts
+st.subheader(f"Top {top_n} Districts by Transaction Amount")
+
+query_districts = f"""
+    SELECT state, district,
+           SUM(transaction_amount) AS total_amount
+    FROM map_transactions
+    GROUP BY state, district
+    ORDER BY total_amount DESC
+    LIMIT {top_n};
+"""
+df_districts = pd.read_sql(query_districts, engine)
+st.dataframe(df_districts, use_container_width=True)
+
+# Insurance Overview
+st.subheader("Insurance Insights by State")
+
+query_insurance = """
+    SELECT state,
+           SUM(total_policies) AS policies,
+           SUM(total_premium) AS premium
+    FROM aggregated_insurance
+    GROUP BY state
+    ORDER BY policies DESC
+    LIMIT 20;
+"""
+df_insurance = pd.read_sql(query_insurance, engine)
+fig3 = px.bar(df_insurance, x="state", y="policies",
+              title="Insurance Policies by State")
+st.plotly_chart(fig3, use_container_width=True)
+
+st.markdown("---")
+st.caption("Data Source: PhonePe Pulse GitHub Data. Engineered using MySQL, SQLAlchemy & Streamlit.")
